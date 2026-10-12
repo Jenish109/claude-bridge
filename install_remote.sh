@@ -47,6 +47,12 @@ echo "Bridge running. On the controlling Mac, run:"
 echo
 echo "  claude mcp add claude-bridge --scope user \\"
 echo "    -e BRIDGE_URL=http://$TS_IP:$PORT -e BRIDGE_TOKEN=$(cat "$HOME/.claude-bridge/token") \\"
-echo "    -- uv run -q --script /path/to/claude-bridge/bridge_mcp.py"
+echo "    -- uv run -q --script ~/claude-bridge/bridge_mcp.py      # path to bridge_mcp.py on the controller"
+echo
+echo "Next on THIS Mac: give Full Disk Access (System Settings > Privacy & Security) to:"
+echo "  $PY"
+echo "  $("$PY" -c 'import sys; print(sys.executable)')"
+echo "  $(readlink -f "$CLAUDE")"
+echo "then restart: launchctl kickstart -k gui/$(id -u)/$LABEL"
 echo
 echo "Logs: ~/.claude-bridge/daemon.log   Stop: launchctl bootout gui/$(id -u)/$LABEL"
