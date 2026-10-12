@@ -47,7 +47,9 @@ echo "Bridge running. On the controlling Mac, run:"
 echo
 echo "  claude mcp add claude-bridge --scope user \\"
 echo "    -e BRIDGE_URL=http://$TS_IP:$PORT -e BRIDGE_TOKEN=$(cat "$HOME/.claude-bridge/token") \\"
-echo "    -- uv run -q --script ~/claude-bridge/bridge_mcp.py      # path to bridge_mcp.py on the controller"
+echo "    -- uv run -q --script ~/claude-bridge/bridge_mcp.py"
+echo
+echo "(Change the last path if bridge_mcp.py is somewhere else on the controller.)"
 echo
 echo "Next on THIS Mac: give Full Disk Access (System Settings > Privacy & Security) to:"
 echo "  $PY"
