@@ -4,7 +4,7 @@
 # dependencies = ["mcp>=1.2,<2"]
 # ///
 """MCP server for the controlling machine: gives Claude tools to run tasks on the
-remote Mac through bridge_daemon.py.
+remote machine (macOS, Linux or Windows) through bridge_daemon.py.
 
 Config (env): BRIDGE_URL=http://<tailscale-ip>:8765  BRIDGE_TOKEN=<token>
 """
@@ -66,18 +66,19 @@ def render(view):
 
 @mcp.tool()
 def remote_health() -> str:
-    """Check that the remote Mac's bridge is reachable; shows its hostname, allowed roots and default permission mode."""
+    """Check that the remote machine's bridge is reachable; shows its hostname, allowed roots and default permission mode."""
     return json.dumps(call("GET", "/health"), indent=2)
 
 
 @mcp.tool()
 def remote_run(prompt: str, cwd: str = "", session_id: str = "", permission_mode: str = "",
                model: str = "", wait_seconds: int = 120) -> str:
-    """Run a Claude Code task on the remote Mac.
+    """Run a Claude Code task on the remote machine.
 
     prompt: what the remote Claude should do.
-    cwd: directory on the remote Mac (must be inside the daemon's allowed roots; default: first root).
-    session_id: pass a session_id from an earlier result to continue that conversation remotely.
+    cwd: directory on the remote machine (must be inside the daemon's allowed roots; default: first root).
+    session_id: continue an existing session — from an earlier result or from remote_sessions
+    (which also lists sessions someone started in the remote machine's own terminal).
     permission_mode: default | plan | acceptEdits | auto | dontAsk | bypassPermissions (if the daemon allows it).
     wait_seconds: how long to wait for completion before returning (max 600); long tasks keep running
     and can be followed with remote_task.
@@ -92,6 +93,17 @@ def remote_run(prompt: str, cwd: str = "", session_id: str = "", permission_mode
 def remote_task(task_id: str, since: int = 0, wait_seconds: int = 60) -> str:
     """Follow a remote task: returns progress events after index `since`, waiting up to wait_seconds for it to finish."""
     return render(wait_for(task_id, since, wait_seconds))
+
+
+@mcp.tool()
+def remote_sessions(limit: int = 20) -> str:
+    """List recent Claude Code sessions on the remote machine (bridge-started or started in its terminal);
+    pass a session_id to remote_run to continue one."""
+    items = call("GET", f"/sessions?limit={limit}")["sessions"]
+    if not items:
+        return "No sessions in the allowed folders yet."
+    return "\n".join(f"{s['session_id']}  {'RUNNING ' if s['running_task'] else ''}{s['prompts']} prompts  "
+                     f"{s['cwd']}  {s['title'][:80]!r}" for s in items)
 
 
 @mcp.tool()

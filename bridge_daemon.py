@@ -3,7 +3,9 @@
 
 Accepts tasks over HTTP (bearer-token auth), runs them with `claude -p`
 (headless, resumable sessions) and keeps the streamed events so the caller
-can poll for progress. Standard library only.
+can poll for progress. Also lists this machine's existing Claude Code sessions
+(including ones started in a terminal) so they can be continued remotely, and
+serves the browser/phone web app. Standard library only; macOS, Linux, Windows.
 
     python3 bridge_daemon.py --host <tailscale-ip> --root ~/Projects
 """
@@ -11,6 +13,8 @@ import argparse
 import hmac
 import json
 import os
+import platform
+import re
 import secrets
 import shutil
 import subprocess
@@ -31,10 +35,13 @@ WEB_FILES = {  # public static files for the browser UI; every API route still n
 STATE_DIR = Path.home() / ".claude-bridge"
 TOKEN_FILE = STATE_DIR / "token"
 LOG_DIR = STATE_DIR / "tasks"
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
+SESSION_ID = re.compile(r"[0-9a-fA-F-]{36}")
 SAFE_MODES = {"default", "plan", "acceptEdits", "auto", "dontAsk"}
 
 tasks = {}
 tasks_lock = threading.Lock()
+session_cache = {}  # transcript path -> (mtime, summary)
 config = None
 
 
@@ -53,9 +60,96 @@ def resolve_cwd(cwd):
     path = Path(os.path.expanduser(cwd or config.roots[0])).resolve()
     if not path.is_dir():
         raise ValueError(f"cwd does not exist: {path}")
-    if not any(path == r or r in path.parents for r in config.roots):
+    if not within_roots(path):
         raise ValueError(f"cwd {path} is outside the allowed roots: {[str(r) for r in config.roots]}")
     return path
+
+
+def within_roots(path):
+    path = Path(path).resolve()
+    return any(path == r or r in path.parents for r in config.roots)
+
+
+def prompt_text(entry):
+    """Text of a real user prompt in a transcript entry, or None (tool results, meta, slash-command noise)."""
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):
+        return None
+    content = entry.get("message", {}).get("content")
+    if isinstance(content, list):
+        content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(content, str) or not content.strip() or content.lstrip().startswith("<"):
+        return None
+    return content
+
+
+def read_transcript(path):
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def summarize_session(path):
+    mtime = path.stat().st_mtime
+    cached = session_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    summary = {"session_id": path.stem, "cwd": None, "title": None, "last_prompt": None, "prompts": 0, "updated": mtime}
+    for entry in read_transcript(path):
+        summary["cwd"] = summary["cwd"] or entry.get("cwd")
+        text = prompt_text(entry)
+        if text:
+            summary["title"] = summary["title"] or text[:120]
+            summary["last_prompt"] = text[:120]
+            summary["prompts"] += 1
+    session_cache[path] = (mtime, summary)
+    return summary
+
+
+def list_sessions(limit=40):
+    """Recent Claude Code sessions on this machine whose folder is inside the allowed roots."""
+    files = sorted(PROJECTS_DIR.glob("*/*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    out = []
+    with tasks_lock:
+        running = {t.session_id: t.id for t in tasks.values() if t.status == "running" and t.session_id}
+    for f in files:
+        try:
+            s = summarize_session(f)
+        except OSError:
+            continue
+        if s["prompts"] and s["cwd"] and within_roots(s["cwd"]):
+            out.append({**s, "running_task": running.get(s["session_id"])})
+            if len(out) >= limit:
+                break
+    return out
+
+
+def session_messages(session_id, limit=200):
+    if not SESSION_ID.fullmatch(session_id):
+        raise ValueError("invalid session id")
+    files = list(PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))
+    if not files:
+        raise LookupError(f"no session {session_id}")
+    messages, cwd = [], None
+    for entry in read_transcript(files[0]):
+        cwd = cwd or entry.get("cwd")
+        if entry.get("isSidechain"):
+            continue
+        text = prompt_text(entry)
+        if text:
+            messages.append({"kind": "user", "text": text})
+        elif entry.get("type") == "assistant":
+            for block in entry.get("message", {}).get("content", []):
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    messages.append({"kind": "text", "text": block["text"]})
+                elif block.get("type") == "tool_use":
+                    messages.append({"kind": "tool", "name": block.get("name"),
+                                     "input": json.dumps(block.get("input"))[:300]})
+    if not cwd or not within_roots(cwd):
+        raise ValueError("that session's folder is outside the allowed roots")
+    return {"session_id": session_id, "cwd": cwd, "messages": messages[-limit:], "total": len(messages)}
 
 
 class Task:
@@ -96,7 +190,7 @@ class Task:
         try:
             self.proc = subprocess.Popen(
                 self.command(), cwd=self.cwd, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
             self.proc.stdin.write(self.prompt)
             self.proc.stdin.close()
             for line in self.proc.stdout:
@@ -149,9 +243,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[{self.address_string()}] {fmt % args}", file=sys.stderr)
 
+    def cors(self):
+        # Token travels in a header (no cookies), so any origin may call the API: lets one web app
+        # page (e.g. on your phone) switch between several machines.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.cors()
+        self.send_header("Access-Control-Max-Age", "600")
+        self.end_headers()
+
     def send(self, code, payload):
         body = json.dumps(payload).encode()
         self.send_response(code)
+        self.cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -204,9 +313,18 @@ class Handler(BaseHTTPRequestHandler):
             parent = base.parent if any(base.parent == r or r in base.parent.parents for r in config.roots) else None
             self.send(200, {"path": str(base), "parent": str(parent) if parent else None, "dirs": dirs})
         elif parts == ["health"]:
-            self.send(200, {"ok": True, "host": os.uname().nodename,
+            self.send(200, {"ok": True, "host": platform.node(), "os": platform.system(),
                             "roots": [str(r) for r in config.roots],
                             "permission_mode": config.permission_mode})
+        elif parts == ["sessions"]:
+            self.send(200, {"sessions": list_sessions(int(params.get("limit", 40)))})
+        elif len(parts) == 2 and parts[0] == "sessions":
+            try:
+                self.send(200, session_messages(parts[1], int(params.get("limit", 200))))
+            except LookupError as exc:
+                self.send(404, {"error": str(exc)})
+            except ValueError as exc:
+                self.send(400, {"error": str(exc)})
         elif parts == ["tasks"]:
             with tasks_lock:
                 items = [t.view(len(t.events)) for t in tasks.values()]
@@ -265,7 +383,10 @@ def main():
     parser.add_argument("--allow-bypass", action="store_true",
                         help="let callers request bypassPermissions")
     parser.add_argument("--claude-bin", default=shutil.which("claude"))
+    parser.add_argument("--log", help="append logs to this file instead of stderr")
     config = parser.parse_args()
+    if config.log:
+        sys.stderr = open(os.path.expanduser(config.log), "a", buffering=1, encoding="utf-8")
     if not config.claude_bin:
         sys.exit("claude not found on PATH; pass --claude-bin /path/to/claude")
     if config.permission_mode == "bypassPermissions":

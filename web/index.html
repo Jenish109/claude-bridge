@@ -76,7 +76,8 @@
   .sheet-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
   .sheet-head h2 { font-size: 16px; margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sheet-body { overflow-y: auto; padding: 6px 0; }
-  .row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .row > .t { cursor: pointer; }
   .row:active { background: var(--tool); }
   .row .t { flex: 1; min-width: 0; }
   .row .t div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -89,12 +90,18 @@
   .login p { margin: 0; color: var(--muted); font-size: 14px; }
   .login input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 16px; }
   .login .err { color: var(--err); font-size: 14px; }
+  .title-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
+  .title-btn h1 { flex: 0 1 auto; }
+  .caret { color: var(--muted); font-size: 13px; }
+  .row .t { background: none; border: 0; text-align: left; padding: 0; }
+  .btn.small { padding: 6px 10px; font-size: 12.5px; flex: none; }
+  .login .btn.ghost { margin-top: -4px; }
 </style>
 </head>
 <body>
 <header>
   <span class="dot" id="dot"></span>
-  <h1 id="title">Claude Bridge</h1>
+  <button id="machineBtn" class="title-btn" aria-label="Switch machine"><h1 id="title">Claude Bridge</h1><span class="caret">▾</span></button>
   <button class="icon-btn" id="newBtn" title="New session" aria-label="New session"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
   <button class="icon-btn" id="sessionsBtn" title="Sessions" aria-label="Sessions"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
 </header>
@@ -111,17 +118,19 @@
 
 <main id="main">
   <div class="login hidden" id="login">
-    <h2>Connect</h2>
-    <p>Enter the bridge token from the worker Mac (<code>~/.claude-bridge/token</code>). It's saved in this browser only.</p>
+    <h2 id="loginTitle">Connect a machine</h2>
+    <p>On the machine running the bridge, the installer printed its address and token (token file: <code>~/.claude-bridge/token</code>). Both are saved in this browser only.</p>
+    <input id="urlInput" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://100.x.y.z:8765">
     <input id="tokenInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Bridge token">
     <div class="err" id="loginErr"></div>
     <button class="btn" id="loginBtn">Connect</button>
+    <button class="btn ghost hidden" id="loginCancel">Cancel</button>
   </div>
   <div id="thread"></div>
 </main>
 
 <footer class="hidden" id="composer">
-  <textarea id="prompt" rows="1" placeholder="Ask Claude on the remote Mac…"></textarea>
+  <textarea id="prompt" rows="1" placeholder="Ask Claude on this machine…"></textarea>
   <button class="send" id="sendBtn" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
 </footer>
 
@@ -139,23 +148,37 @@ const $ = (id) => document.getElementById(id);
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
-};
-const state = {
-  token: store.get("bridge.token", ""),
-  session: store.get("bridge.session", null),   // session_id being viewed (null = new)
-  cwd: store.get("bridge.cwd", ""),
-  health: null,
-  running: null,                                // {task_id, since}
-  pollTimer: null,
+  json(k, d) { try { return JSON.parse(store.get(k, "")) ?? d; } catch { return d; } },
 };
 
+// Saved machines: [{id, name, url, token}] — one page can drive any number of bridges.
+let machines = store.json("bridge.machines", []);
+if (!machines.length && store.get("bridge.token", "")) {   // migrate the single-machine version
+  machines = [{ id: "m" + Date.now(), name: location.host, url: location.origin, token: store.get("bridge.token") }];
+  store.set("bridge.token", null);
+}
+const state = {
+  machineId: store.get("bridge.machine", machines[0]?.id || null),
+  session: null, cwd: "", health: null,
+  task: null,          // task_id running in the open session
+  lastMeta: null,      // footer for the most recent finished task
+  pollTimer: null, pollSeq: 0,
+};
+const machine = () => machines.find((m) => m.id === state.machineId);
+const saveMachines = () => store.set("bridge.machines", JSON.stringify(machines));
+const mkey = (k) => `bridge.${state.machineId}.${k}`;    // per-machine prefs (session, cwd)
+
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method, headers: { "Authorization": "Bearer " + state.token, "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const m = machine();
+  let res;
+  try {
+    res = await fetch(m.url.replace(/\/$/, "") + path, {
+      method, headers: { "Authorization": "Bearer " + m.token, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch { throw new Error(`Can't reach ${m.name}. Is it on, awake, and is Tailscale connected on both devices?`); }
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) { logout("Token rejected. Enter it again."); throw new Error("unauthorized"); }
+  if (res.status === 401) throw new Error("Token rejected — check the token for " + m.name);
   if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
   return data;
 }
@@ -164,7 +187,7 @@ async function api(method, path, body) {
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
 function renderMarkdownish(text) {
-  // Code fences -> <pre>, `inline` -> <code>; everything else is plain text (no HTML injection).
+  // Code fences -> <pre>, `inline` -> <code>; everything else is plain text (never parsed as HTML).
   const box = el("div", "msg claude");
   text.split(/```[^\n]*\n?/).forEach((part, i) => {
     if (i % 2) { box.appendChild(el("pre", null, part.replace(/\n$/, ""))); return; }
@@ -176,55 +199,53 @@ function renderMarkdownish(text) {
   return box;
 }
 
-function toolLine(e) {
+function toolLine(m) {
   const d = el("div", "tool"); let arg = "";
-  try { const o = JSON.parse(e.input); arg = o.command || o.file_path || o.pattern || o.path || o.url || o.description || e.input; } catch { arg = e.input; }
-  d.append(el("b", null, e.name + " "), document.createTextNode(String(arg)));
+  try { const o = JSON.parse(m.input); arg = o.command || o.file_path || o.pattern || o.path || o.url || o.description || m.input; } catch { arg = m.input; }
+  d.append(el("b", null, m.name + " "), document.createTextNode(String(arg)));
   return d;
 }
 
-function renderTask(t, container) {
-  container.appendChild(el("div", "msg user", t.prompt));
-  const texts = t.events.filter((e) => e.kind === "text");
-  t.events.forEach((e) => container.appendChild(e.kind === "text" ? renderMarkdownish(e.text) : toolLine(e)));
-  if (!texts.length && t.result && t.status === "done") container.appendChild(renderMarkdownish(t.result));
-  const meta = el("div", "meta");
-  if (t.status === "running") {
-    meta.append(el("span", "spinner"), document.createTextNode(`Working… ${Math.round(t.elapsed_s)}s`));
-  } else if (t.status === "error") {
-    meta.className = "meta err"; meta.textContent = "Error: " + (t.result || "task failed");
-  } else {
-    meta.textContent = `${t.status === "cancelled" ? "Stopped" : "Done"} · ${t.elapsed_s}s` + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "");
-  }
-  container.appendChild(meta);
+function renderMessage(m) {
+  return m.kind === "user" ? el("div", "msg user", m.text) : m.kind === "text" ? renderMarkdownish(m.text) : toolLine(m);
 }
 
-async function loadThread() {
-  const thread = $("thread"); stopPolling();
-  if (!state.session) {
-    thread.replaceChildren();
-    const empty = el("div", "empty");
-    empty.append(el("b", null, "New session"), document.createTextNode(`Tasks run on ${state.health?.host || "the remote Mac"} in the folder above. Follow-ups continue the same Claude session.`));
-    thread.appendChild(empty); setComposer(false); return;
-  }
-  const { tasks } = await api("GET", "/tasks");
-  const mine = tasks.filter((t) => t.session_id === state.session).sort((a, b) => a.started - b.started);
-  const full = await Promise.all(mine.map((t) => api("GET", `/tasks/${t.task_id}?since=0`)));
-  thread.replaceChildren();
-  if (!full.length) { thread.appendChild(el("div", "empty", "This session isn't in the bridge's memory anymore (the bridge restarted). Your next message still continues it.")); }
-  full.forEach((t) => {
-    const block = el("div"); block.dataset.task = t.task_id; block.style.display = "contents";
-    renderTask(t, block); thread.appendChild(block);
-  });
-  if (full.length) { state.cwd = full[full.length - 1].cwd; showCwd(); }
-  const live = full.find((t) => t.status === "running");
-  if (live) { state.running = { task_id: live.task_id }; startPolling(); } else setComposer(false);
-  scrollDown();
+function metaLine(t) {
+  const meta = el("div", "meta");
+  if (t.status === "running") meta.append(el("span", "spinner"), document.createTextNode(`Working… ${Math.round(t.elapsed_s)}s`));
+  else if (t.status === "error") { meta.className = "meta err"; meta.textContent = "Error: " + (t.result || "task failed"); }
+  else meta.textContent = `${t.status === "cancelled" ? "Stopped" : "Done"} · ${t.elapsed_s}s` + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "");
+  return meta;
+}
+
+function emptyState() {
+  const e = el("div", "empty");
+  e.append(el("b", null, "New session"), document.createTextNode(
+    `Claude runs on ${state.health?.host || "this machine"} in the folder above. Open ☰ to continue any session on it — including ones started in its terminal.`));
+  return e;
+}
+
+// The thread is always rebuilt from the machine's own transcript, so sessions started anywhere look the same.
+async function renderThread({ pendingPrompt, task } = {}) {
+  const thread = $("thread"); const nodes = [];
+  if (state.session) {
+    try {
+      const s = await api("GET", `/sessions/${state.session}`);
+      if (s.total > s.messages.length) nodes.push(el("div", "meta", `… ${s.total - s.messages.length} earlier messages not shown`));
+      s.messages.forEach((m) => nodes.push(renderMessage(m)));
+      if (s.cwd && s.cwd !== state.cwd) { state.cwd = s.cwd; showCwd(); }
+    } catch (e) { nodes.push(el("div", "meta err", e.message)); }
+  } else if (!pendingPrompt) nodes.push(emptyState());
+  if (pendingPrompt) nodes.push(el("div", "msg user", pendingPrompt));
+  if (task) nodes.push(metaLine(task)); else if (state.lastMeta) nodes.push(state.lastMeta);
+  const atBottom = $("main").scrollHeight - $("main").scrollTop - $("main").clientHeight < 80;
+  thread.replaceChildren(...nodes);
+  if (atBottom || task) scrollDown();
 }
 
 function scrollDown() { const m = $("main"); requestAnimationFrame(() => { m.scrollTop = m.scrollHeight; }); }
 
-// ---------- running tasks ----------
+// ---------- tasks ----------
 function setComposer(running) {
   const b = $("sendBtn");
   b.classList.toggle("stop", running);
@@ -234,45 +255,52 @@ function setComposer(running) {
   $("prompt").disabled = running;
 }
 
-function stopPolling() { clearTimeout(state.pollTimer); state.running = null; }
+function stopPolling() { clearTimeout(state.pollTimer); state.pollSeq++; state.task = null; setComposer(false); }
 
-function startPolling() {
-  setComposer(true);
+function follow(taskId, pendingPrompt) {
+  stopPolling(); state.task = taskId; state.lastMeta = null; setComposer(true);
+  const seq = state.pollSeq;
   const tick = async () => {
-    if (!state.running) return;
+    if (seq !== state.pollSeq) return;
     try {
-      const t = await api("GET", `/tasks/${state.running.task_id}?since=0`);
-      if (t.session_id && t.session_id !== state.session) { state.session = t.session_id; store.set("bridge.session", t.session_id); }
-      // re-render just this task's block
-      const thread = $("thread"); const block = thread.querySelector(`[data-task="${t.task_id}"]`) || el("div");
-      block.dataset.task = t.task_id; block.style.display = "contents"; block.replaceChildren(); renderTask(t, block);
-      if (!block.parentNode) { thread.querySelector(".empty")?.remove(); thread.appendChild(block); }
-      scrollDown();
-      if (t.status !== "running") { stopPolling(); setComposer(false); return; }
-    } catch (e) { if (e.message === "unauthorized") return; }
+      const t = await api("GET", `/tasks/${taskId}?since=999999`);
+      if (seq !== state.pollSeq) return;
+      if (t.session_id && t.session_id !== state.session) { state.session = t.session_id; store.set(mkey("session"), t.session_id); }
+      if (t.status !== "running") {
+        state.task = null; state.lastMeta = metaLine(t); setComposer(false);
+        return renderThread();
+      }
+      await renderThread({ pendingPrompt: state.session ? null : pendingPrompt, task: t });
+    } catch (e) { if (seq === state.pollSeq) $("thread").appendChild(el("div", "meta err", e.message)); }
     state.pollTimer = setTimeout(tick, 1500);
   };
   tick();
 }
 
 async function send() {
-  if (state.running) {                                   // acts as Stop while running
-    try { await api("POST", `/tasks/${state.running.task_id}/cancel`); } catch {}
-    return;
-  }
+  if (state.task) { try { await api("POST", `/tasks/${state.task}/cancel`); } catch {} return; }
   const prompt = $("prompt").value.trim(); if (!prompt) return;
   $("sendBtn").disabled = true;
   try {
     const t = await api("POST", "/tasks", { prompt, cwd: state.cwd || null, session_id: state.session, permission_mode: $("mode").value || null });
     $("prompt").value = ""; autosize();
-    state.running = { task_id: t.task_id }; startPolling();
-  } catch (e) { alertInline(e.message); }
+    follow(t.task_id, prompt);
+  } catch (e) { $("thread").appendChild(el("div", "meta err", e.message)); scrollDown(); }
   finally { $("sendBtn").disabled = false; }
 }
 
-function alertInline(msg) { const m = el("div", "meta err", msg); $("thread").appendChild(m); scrollDown(); }
+async function openSession(sid) {
+  stopPolling(); state.lastMeta = null; state.session = sid; store.set(mkey("session"), sid);
+  if (!sid) { renderThread(); return; }
+  await renderThread();
+  try {   // resume following a task still running in this session (e.g. started from another device)
+    const { tasks } = await api("GET", "/tasks");
+    const live = tasks.find((t) => t.session_id === sid && t.status === "running");
+    if (live) follow(live.task_id);
+  } catch {}
+}
 
-// ---------- sheets: sessions + folders ----------
+// ---------- sheets ----------
 function openSheet(title, rows, action) {
   $("sheetTitle").textContent = title; $("sheetBody").replaceChildren(...rows);
   $("sheetAction").replaceChildren(...(action ? [action] : []));
@@ -280,84 +308,121 @@ function openSheet(title, rows, action) {
 }
 function closeSheet() { $("sheet").classList.add("hidden"); }
 
-function row(title, sub, onClick) {
-  const r = el("button", "row"); const t = el("div", "t");
+function row(title, sub, onClick, extra) {
+  const r = el("div", "row"); const t = el("button", "t");
   t.append(el("div", null, title)); if (sub) t.append(el("div", "sub", sub));
-  r.append(t); r.onclick = onClick; return r;
+  t.onclick = onClick; r.append(t); if (extra) r.append(extra); return r;
 }
 
 async function showSessions() {
-  const { tasks } = await api("GET", "/tasks");
-  const groups = new Map();
-  tasks.filter((t) => t.session_id).sort((a, b) => b.started - a.started).forEach((t) => {
-    if (!groups.has(t.session_id)) groups.set(t.session_id, { last: t, first: t, n: 0 });
-    const g = groups.get(t.session_id); g.first = t; g.n++;
-  });
-  const rows = [...groups.entries()].map(([sid, g]) => row(
-    (g.last.status === "running" ? "● " : "") + g.first.prompt.slice(0, 80),
-    `${g.n} message${g.n > 1 ? "s" : ""} · ${shortPath(g.last.cwd)} · ${timeAgo(g.last.started)}`,
-    () => { state.session = sid; store.set("bridge.session", sid); closeSheet(); loadThread(); }));
-  if (!rows.length) rows.push(el("div", "row sub", "No sessions yet."));
+  let list;
+  try { ({ sessions: list } = await api("GET", "/sessions")); }
+  catch (e) { return openSheet("Sessions", [el("div", "row sub", e.message)]); }
+  const rows = list.map((s) => row(
+    (s.running_task ? "● " : "") + s.title,
+    `${s.prompts} prompt${s.prompts > 1 ? "s" : ""} · ${shortPath(s.cwd)} · ${timeAgo(s.updated)}`,
+    () => { closeSheet(); state.cwd = s.cwd; store.set(mkey("cwd"), s.cwd); showCwd(); openSession(s.session_id); }));
+  if (!rows.length) rows.push(el("div", "row sub", "No Claude Code sessions in the allowed folders yet."));
   const nb = el("button", "btn", "New"); nb.onclick = () => { closeSheet(); newSession(); };
-  openSheet("Sessions", rows, nb);
+  openSheet(`Sessions on ${state.health?.host || machine().name}`, rows, nb);
 }
 
 async function showFolders(path) {
   let d;
   try { d = await api("GET", "/dirs?path=" + encodeURIComponent(path || state.cwd || "")); }
   catch (e) { return openSheet("Folders", [el("div", "row sub", e.message)]); }
+  const sep = d.path.includes("\\") && !d.path.includes("/") ? "\\" : "/";
   const rows = [];
   if (d.parent) rows.push(row("⬆︎  ..", null, () => showFolders(d.parent)));
-  d.dirs.forEach((name) => rows.push(row("📁  " + name, null, () => showFolders(d.path + "/" + name))));
+  d.dirs.forEach((name) => rows.push(row("📁  " + name, null, () => showFolders(d.path + sep + name))));
   if (!d.dirs.length) rows.push(el("div", "row sub", "No subfolders."));
   const use = el("button", "btn", "Use");
-  use.onclick = () => { state.cwd = d.path; store.set("bridge.cwd", d.path); showCwd(); closeSheet(); if (state.session) newSession(); };
+  use.onclick = () => { state.cwd = d.path; store.set(mkey("cwd"), d.path); showCwd(); closeSheet(); if (state.session) newSession(); };
   openSheet(shortPath(d.path), rows, use);
 }
 
-function newSession() { stopPolling(); state.session = null; store.set("bridge.session", null); loadThread(); $("prompt").focus(); }
+function showMachines() {
+  const rows = machines.map((m) => {
+    const del = el("button", "btn ghost small", "Remove");
+    del.onclick = () => {
+      machines = machines.filter((x) => x.id !== m.id); saveMachines();
+      if (state.machineId === m.id) { state.machineId = machines[0]?.id || null; store.set("bridge.machine", state.machineId); closeSheet(); boot(); }
+      else showMachines();
+    };
+    return row((m.id === state.machineId ? "✓ " : "") + m.name, m.url, () => { closeSheet(); switchMachine(m.id); }, del);
+  });
+  const add = el("button", "btn", "Add"); add.onclick = () => { closeSheet(); showLogin(true); };
+  openSheet("Machines", rows, add);
+}
+
+function newSession() { openSession(null); $("prompt").focus(); }
 function showCwd() { $("cwdText").textContent = shortPath(state.cwd || state.health?.roots?.[0] || "~"); }
 function shortPath(p) {
-  const s = (p || "").replace(/^\/Users\/[^/]+/, "~");
-  return s.length <= 28 ? s : "…/" + s.split("/").slice(-2).join("/");
+  const s = (p || "").replace(/^\/Users\/[^/]+|^\/home\/[^/]+|^[A-Za-z]:\\Users\\[^\\]+/, "~");
+  return s.length <= 28 ? s : "…/" + s.split(/[\\/]/).slice(-2).join("/");
 }
 function timeAgo(ts) { const s = Date.now() / 1000 - ts; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; }
 
-// ---------- auth + boot ----------
-function logout(msg) {
-  state.token = ""; store.set("bridge.token", null); stopPolling();
+// ---------- machines + boot ----------
+function showLogin(adding, msg) {
+  stopPolling();
   ["bar", "composer"].forEach((id) => $(id).classList.add("hidden"));
   $("thread").replaceChildren(); $("login").classList.remove("hidden");
+  $("loginTitle").textContent = adding ? "Add a machine" : "Connect a machine";
+  $("loginCancel").classList.toggle("hidden", !machine());
+  $("urlInput").value = adding ? "" : (machine()?.url || location.origin);
+  $("tokenInput").value = "";
   $("loginErr").textContent = msg || ""; $("dot").className = "dot";
 }
 
-async function connect() {
-  try {
-    state.health = await api("GET", "/health");
-  } catch (e) {
-    if (e.message !== "unauthorized") { $("dot").className = "dot err"; logout("Can't reach the bridge: " + e.message); }
-    return;
-  }
-  $("login").classList.add("hidden");
+async function addMachine() {
+  const url = $("urlInput").value.trim().replace(/\/$/, "") || location.origin;
+  const token = $("tokenInput").value.trim();
+  if (!/^https?:\/\//.test(url)) return ($("loginErr").textContent = "Address must start with http:// or https://");
+  if (!token) return ($("loginErr").textContent = "Paste the token.");
+  const existing = machines.find((m) => m.url === url);
+  const m = existing || { id: "m" + Date.now(), url };
+  Object.assign(m, { token, name: m.name || url.replace(/^https?:\/\//, "") });
+  const prev = state.machineId; state.machineId = m.id;
+  if (!existing) machines.push(m);
+  try { m.name = (await api("GET", "/health")).host || m.name; }
+  catch (e) { if (!existing) machines.pop(); state.machineId = prev; return ($("loginErr").textContent = e.message); }
+  saveMachines(); switchMachine(m.id);
+}
+
+function switchMachine(id) { state.machineId = id; store.set("bridge.machine", id); boot(); }
+
+async function boot() {
+  stopPolling(); closeSheet(); state.lastMeta = null;
+  const m = machine(); if (!m) return showLogin(false);
+  $("title").textContent = m.name; $("dot").className = "dot";
+  $("login").classList.add("hidden"); $("thread").replaceChildren();
+  try { state.health = await api("GET", "/health"); }
+  catch (e) { $("dot").className = "dot err"; $("thread").replaceChildren(el("div", "meta err", e.message)); $("bar").classList.add("hidden"); $("composer").classList.add("hidden"); return; }
+  if (state.health.host && m.name !== state.health.host) { m.name = state.health.host; saveMachines(); }
+  $("title").textContent = m.name; $("dot").className = "dot ok";
   ["bar", "composer"].forEach((id) => $(id).classList.remove("hidden"));
-  $("dot").className = "dot ok"; $("title").textContent = state.health.host;
-  showCwd(); await loadThread();
+  $("prompt").placeholder = `Ask Claude on ${m.name}…`;
+  state.cwd = store.get(mkey("cwd"), ""); showCwd();
+  await openSession(store.get(mkey("session"), null));
 }
 
 function autosize() { const t = $("prompt"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, innerHeight * 0.4) + "px"; }
 
-$("loginBtn").onclick = () => { state.token = $("tokenInput").value.trim(); store.set("bridge.token", state.token); connect(); };
-$("tokenInput").onkeydown = (e) => { if (e.key === "Enter") $("loginBtn").click(); };
+$("loginBtn").onclick = addMachine;
+$("loginCancel").onclick = boot;
+$("tokenInput").onkeydown = (e) => { if (e.key === "Enter") addMachine(); };
 $("sendBtn").onclick = send;
 $("prompt").oninput = autosize;
 $("prompt").onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); };
-$("newBtn").onclick = newSession;
-$("sessionsBtn").onclick = () => state.token && showSessions().catch((e) => alertInline(e.message));
+$("newBtn").onclick = () => machine() && newSession();
+$("sessionsBtn").onclick = () => machine() && state.health && showSessions();
+$("machineBtn").onclick = () => machine() ? showMachines() : null;
 $("cwdChip").onclick = () => showFolders();
 $("sheetBg").onclick = $("sheetClose").onclick = closeSheet;
-document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token && state.health) loadThread().catch(() => {}); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state.health && !state.task) renderThread().catch(() => {}); });
 
-if (state.token) connect(); else logout();
+boot();
 </script>
 </body>
 </html>
