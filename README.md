@@ -1,6 +1,6 @@
 # claude-bridge
 
-Control **Claude Code on another Mac** from the Claude Code session on your own Mac.
+Control **Claude Code on another Mac** from the Claude Code session on your own Mac, or from **any phone, tablet or computer browser**.
 
 - Doesn't use Claude Remote Control or cloud sessions.
 - Doesn't use a public URL: the two Macs talk directly and encrypted over [Tailscale](https://tailscale.com) (free).
@@ -17,6 +17,8 @@ Control **Claude Code on another Mac** from the Claude Code session on your own 
  └───────────────────────────┘                   └───────────────────────────────┘
 ```
 
+> **Two ways to control the worker:** from **Claude Code on another Mac** (MCP tools, Steps 3–4), or from **any device with a browser** (the built-in web app, [Step 5](#step-5-phone-tablet-or-any-browser-web-app)).
+>
 > **It only works in one direction.** The controller sends tasks to the worker. For both Macs to control each other, set it up twice, once in each direction.
 
 ---
@@ -122,6 +124,34 @@ Use **paths on the worker Mac** (e.g. `/Users/<worker-user>/...`), not paths fro
 
 Every result includes a `session_id`. Pass it back to continue the same conversation, or open it on the worker with `claude --resume <id>`.
 
+## Step 5: Phone, tablet or any browser (web app)
+
+The bridge includes a web app, so **iPhone, Android, iPad, Windows and Linux** all work. You don't install anything except Tailscale.
+
+1. Install **Tailscale** on the device ([App Store](https://apps.apple.com/app/tailscale/id1470499037) · [Google Play](https://play.google.com/store/apps/details?id=com.tailscale.ipn) · [other](https://tailscale.com/download)) and log in with the **same account**. Keep its VPN switch **on**.
+2. In the device's browser, open the worker's address. `install_remote.sh` prints it:
+   ```
+   http://<worker-tailscale-ip>:8765
+   ```
+3. Paste the **bridge token** (worker: `cat ~/.claude-bridge/token`) and tap **Connect**. It's saved only in that browser.
+4. **Add it to your home screen** so it opens like an app:
+   - **iPhone/iPad (Safari):** Share → **Add to Home Screen**
+   - **Android (Chrome):** ⋮ menu → **Add to Home screen** / **Install app**
+   - **Desktop Chrome/Edge:** the install icon in the address bar
+
+What you can do in the web app:
+
+| | |
+|---|---|
+| 📁 **Folder** chip | Browse the worker's allowed folders and pick where Claude works |
+| 🔒 **Mode** chip | Bridge default / Plan only / Accept edits / Bypass (if the daemon allows it) |
+| Message box | Send a task. Live progress shows each tool Claude uses and its replies. Follow-ups continue the same session |
+| ■ button (while running) | Stop the task |
+| **＋** | Start a new session |
+| **☰** | Switch between recent sessions |
+
+It uses plain `http`, but that's safe here because Tailscale encrypts all traffic between your devices, and the address can't be reached from the internet.
+
 ---
 
 ## Permissions
@@ -155,6 +185,8 @@ To change these, rerun `./install_remote.sh` with the new flags. The token stays
 | Remote Claude says a command was denied | Pre-approve it with `--allowed-tools`, or use `--allow-bypass` |
 | Desktop access breaks after a Claude Code update | The `claude` path changed. Rerun `readlink -f "$(which claude)"` and add the new path to Full Disk Access |
 | No `remote_*` tools in Claude | Restart Claude Code; check `claude mcp get claude-bridge` |
+| Web app: page won't load on phone | Tailscale VPN on in the phone's app? Using `http://` (not https) and port `:8765`? |
+| Web app: "Token rejected" | Paste the token again; it changes if you rotate it |
 | Worker's own Claude says it has no bridge tool | Expected: it only works in one direction. Send requests from the controller, or set up the reverse direction too |
 
 ## Manage the daemon (worker)
@@ -175,6 +207,7 @@ The task list is kept in memory and resets when the daemon restarts. Sessions ca
 |---|---|---|
 | `bridge_daemon.py` | Worker | HTTP server (standard library only) that runs `claude -p` tasks and records their progress |
 | `install_remote.sh` | Worker | Installs the daemon as a launchd agent and prints the controller command |
+| `web/` | Worker (served by the daemon) | Browser/phone web app (installable on the home screen) |
 | `bridge_mcp.py` | Controller | MCP server providing the `remote_*` tools (dependencies installed automatically by `uv`) |
 
 ## License

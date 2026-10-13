@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16161a" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Claude Bridge">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>Claude Bridge</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1c1a; --muted: #6f6c66; --line: #e4e1da;
+    --accent: #c96442; --accent-ink: #fff; --user: #efe9df; --tool: #f1f0ec; --ok: #2f8a4c; --err: #c0392b;
+    --radius: 14px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16161a; --panel: #1f1f24; --ink: #ecebe8; --muted: #9a978f; --line: #2e2e35;
+            --accent: #d97757; --user: #2a2724; --tool: #24242a; --ok: #5cc37e; --err: #ef6b5b; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column; -webkit-text-size-adjust: 100%; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 0; background: none; padding: 0; }
+  .hidden { display: none !important; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+  .icon-btn { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex: none; }
+  .icon-btn:active { background: var(--tool); }
+  .icon-btn svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .bar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line);
+          font-size: 14px; white-space: nowrap; max-width: 70vw; overflow: hidden; text-overflow: ellipsis; background: var(--bg); }
+  .chip select { border: 0; background: transparent; font-size: 14px; outline: none; }
+
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; -webkit-overflow-scrolling: touch; }
+  .empty { margin: auto; text-align: center; color: var(--muted); max-width: 320px; }
+  .empty b { color: var(--ink); display: block; font-size: 18px; margin-bottom: 6px; }
+  .msg { max-width: 100%; padding: 10px 14px; border-radius: var(--radius); white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--user); max-width: 88%; }
+  .msg.claude { align-self: stretch; background: var(--panel); border: 1px solid var(--line); }
+  .msg.claude pre { background: var(--tool); padding: 10px; border-radius: 8px; overflow-x: auto; white-space: pre; font: 13px/1.4 var(--mono); margin: 6px 0; }
+  .msg.claude code { font: 0.9em var(--mono); background: var(--tool); padding: 1px 4px; border-radius: 4px; }
+  .tool { align-self: stretch; font: 13px/1.35 var(--mono); color: var(--muted); background: var(--tool); padding: 6px 10px; border-radius: 8px;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool b { color: var(--ink); font-weight: 600; }
+  .meta { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .meta.err { color: var(--err); white-space: pre-wrap; }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .link { color: var(--accent); font-weight: 600; font-size: 13px; }
+
+  footer { padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px); background: var(--panel); border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 20px; padding: 10px 14px; background: var(--bg);
+             max-height: 40vh; min-height: 44px; outline: none; font-size: 16px; }
+  textarea:focus { border-color: var(--accent); }
+  .send { width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+  .send:disabled { opacity: .4; }
+  .send svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  .send.stop { background: var(--err); }
+
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 10; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 82vh; background: var(--panel); z-index: 11; border-radius: 18px 18px 0 0;
+           display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom); max-width: 640px; margin: 0 auto; }
+  .sheet-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .sheet-head h2 { font-size: 16px; margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sheet-body { overflow-y: auto; padding: 6px 0; }
+  .row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .row:active { background: var(--tool); }
+  .row .t { flex: 1; min-width: 0; }
+  .row .t div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { font-size: 12.5px; color: var(--muted); }
+  .btn { padding: 9px 16px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 14px; }
+  .btn.ghost { background: var(--tool); color: var(--ink); }
+
+  .login { margin: auto; width: 100%; max-width: 380px; padding: 24px 16px; display: flex; flex-direction: column; gap: 14px; }
+  .login h2 { margin: 0; font-size: 22px; }
+  .login p { margin: 0; color: var(--muted); font-size: 14px; }
+  .login input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 16px; }
+  .login .err { color: var(--err); font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1 id="title">Claude Bridge</h1>
+  <button class="icon-btn" id="newBtn" title="New session" aria-label="New session"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="icon-btn" id="sessionsBtn" title="Sessions" aria-label="Sessions"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
+</header>
+
+<div class="bar hidden" id="bar">
+  <button class="chip" id="cwdChip" title="Working folder">📁 <span id="cwdText">…</span></button>
+  <label class="chip">🔒 <select id="mode" aria-label="Permission mode">
+    <option value="">Bridge default</option>
+    <option value="plan">Plan only</option>
+    <option value="acceptEdits">Accept edits</option>
+    <option value="bypassPermissions">Bypass (if allowed)</option>
+  </select></label>
+</div>
+
+<main id="main">
+  <div class="login hidden" id="login">
+    <h2>Connect</h2>
+    <p>Enter the bridge token from the worker Mac (<code>~/.claude-bridge/token</code>). It's saved in this browser only.</p>
+    <input id="tokenInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Bridge token">
+    <div class="err" id="loginErr"></div>
+    <button class="btn" id="loginBtn">Connect</button>
+  </div>
+  <div id="thread"></div>
+</main>
+
+<footer class="hidden" id="composer">
+  <textarea id="prompt" rows="1" placeholder="Ask Claude on the remote Mac…"></textarea>
+  <button class="send" id="sendBtn" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+</footer>
+
+<div class="hidden" id="sheet">
+  <div class="sheet-bg" id="sheetBg"></div>
+  <div class="sheet">
+    <div class="sheet-head"><h2 id="sheetTitle"></h2><span id="sheetAction"></span>
+      <button class="icon-btn" id="sheetClose" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+const state = {
+  token: store.get("bridge.token", ""),
+  session: store.get("bridge.session", null),   // session_id being viewed (null = new)
+  cwd: store.get("bridge.cwd", ""),
+  health: null,
+  running: null,                                // {task_id, since}
+  pollTimer: null,
+};
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, headers: { "Authorization": "Bearer " + state.token, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { logout("Token rejected. Enter it again."); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+// ---------- rendering ----------
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+function renderMarkdownish(text) {
+  // Code fences -> <pre>, `inline` -> <code>; everything else is plain text (no HTML injection).
+  const box = el("div", "msg claude");
+  text.split(/```[^\n]*\n?/).forEach((part, i) => {
+    if (i % 2) { box.appendChild(el("pre", null, part.replace(/\n$/, ""))); return; }
+    part.split(/(`[^`\n]+`)/).forEach((seg) => {
+      if (/^`[^`]+`$/.test(seg)) box.appendChild(el("code", null, seg.slice(1, -1)));
+      else if (seg) box.appendChild(document.createTextNode(seg));
+    });
+  });
+  return box;
+}
+
+function toolLine(e) {
+  const d = el("div", "tool"); let arg = "";
+  try { const o = JSON.parse(e.input); arg = o.command || o.file_path || o.pattern || o.path || o.url || o.description || e.input; } catch { arg = e.input; }
+  d.append(el("b", null, e.name + " "), document.createTextNode(String(arg)));
+  return d;
+}
+
+function renderTask(t, container) {
+  container.appendChild(el("div", "msg user", t.prompt));
+  const texts = t.events.filter((e) => e.kind === "text");
+  t.events.forEach((e) => container.appendChild(e.kind === "text" ? renderMarkdownish(e.text) : toolLine(e)));
+  if (!texts.length && t.result && t.status === "done") container.appendChild(renderMarkdownish(t.result));
+  const meta = el("div", "meta");
+  if (t.status === "running") {
+    meta.append(el("span", "spinner"), document.createTextNode(`Working… ${Math.round(t.elapsed_s)}s`));
+  } else if (t.status === "error") {
+    meta.className = "meta err"; meta.textContent = "Error: " + (t.result || "task failed");
+  } else {
+    meta.textContent = `${t.status === "cancelled" ? "Stopped" : "Done"} · ${t.elapsed_s}s` + (t.cost_usd ? ` · $${t.cost_usd.toFixed(3)}` : "");
+  }
+  container.appendChild(meta);
+}
+
+async function loadThread() {
+  const thread = $("thread"); stopPolling();
+  if (!state.session) {
+    thread.replaceChildren();
+    const empty = el("div", "empty");
+    empty.append(el("b", null, "New session"), document.createTextNode(`Tasks run on ${state.health?.host || "the remote Mac"} in the folder above. Follow-ups continue the same Claude session.`));
+    thread.appendChild(empty); setComposer(false); return;
+  }
+  const { tasks } = await api("GET", "/tasks");
+  const mine = tasks.filter((t) => t.session_id === state.session).sort((a, b) => a.started - b.started);
+  const full = await Promise.all(mine.map((t) => api("GET", `/tasks/${t.task_id}?since=0`)));
+  thread.replaceChildren();
+  if (!full.length) { thread.appendChild(el("div", "empty", "This session isn't in the bridge's memory anymore (the bridge restarted). Your next message still continues it.")); }
+  full.forEach((t) => {
+    const block = el("div"); block.dataset.task = t.task_id; block.style.display = "contents";
+    renderTask(t, block); thread.appendChild(block);
+  });
+  if (full.length) { state.cwd = full[full.length - 1].cwd; showCwd(); }
+  const live = full.find((t) => t.status === "running");
+  if (live) { state.running = { task_id: live.task_id }; startPolling(); } else setComposer(false);
+  scrollDown();
+}
+
+function scrollDown() { const m = $("main"); requestAnimationFrame(() => { m.scrollTop = m.scrollHeight; }); }
+
+// ---------- running tasks ----------
+function setComposer(running) {
+  const b = $("sendBtn");
+  b.classList.toggle("stop", running);
+  b.setAttribute("aria-label", running ? "Stop" : "Send");
+  b.innerHTML = running ? '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>'
+                        : '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+  $("prompt").disabled = running;
+}
+
+function stopPolling() { clearTimeout(state.pollTimer); state.running = null; }
+
+function startPolling() {
+  setComposer(true);
+  const tick = async () => {
+    if (!state.running) return;
+    try {
+      const t = await api("GET", `/tasks/${state.running.task_id}?since=0`);
+      if (t.session_id && t.session_id !== state.session) { state.session = t.session_id; store.set("bridge.session", t.session_id); }
+      // re-render just this task's block
+      const thread = $("thread"); const block = thread.querySelector(`[data-task="${t.task_id}"]`) || el("div");
+      block.dataset.task = t.task_id; block.style.display = "contents"; block.replaceChildren(); renderTask(t, block);
+      if (!block.parentNode) { thread.querySelector(".empty")?.remove(); thread.appendChild(block); }
+      scrollDown();
+      if (t.status !== "running") { stopPolling(); setComposer(false); return; }
+    } catch (e) { if (e.message === "unauthorized") return; }
+    state.pollTimer = setTimeout(tick, 1500);
+  };
+  tick();
+}
+
+async function send() {
+  if (state.running) {                                   // acts as Stop while running
+    try { await api("POST", `/tasks/${state.running.task_id}/cancel`); } catch {}
+    return;
+  }
+  const prompt = $("prompt").value.trim(); if (!prompt) return;
+  $("sendBtn").disabled = true;
+  try {
+    const t = await api("POST", "/tasks", { prompt, cwd: state.cwd || null, session_id: state.session, permission_mode: $("mode").value || null });
+    $("prompt").value = ""; autosize();
+    state.running = { task_id: t.task_id }; startPolling();
+  } catch (e) { alertInline(e.message); }
+  finally { $("sendBtn").disabled = false; }
+}
+
+function alertInline(msg) { const m = el("div", "meta err", msg); $("thread").appendChild(m); scrollDown(); }
+
+// ---------- sheets: sessions + folders ----------
+function openSheet(title, rows, action) {
+  $("sheetTitle").textContent = title; $("sheetBody").replaceChildren(...rows);
+  $("sheetAction").replaceChildren(...(action ? [action] : []));
+  $("sheet").classList.remove("hidden");
+}
+function closeSheet() { $("sheet").classList.add("hidden"); }
+
+function row(title, sub, onClick) {
+  const r = el("button", "row"); const t = el("div", "t");
+  t.append(el("div", null, title)); if (sub) t.append(el("div", "sub", sub));
+  r.append(t); r.onclick = onClick; return r;
+}
+
+async function showSessions() {
+  const { tasks } = await api("GET", "/tasks");
+  const groups = new Map();
+  tasks.filter((t) => t.session_id).sort((a, b) => b.started - a.started).forEach((t) => {
+    if (!groups.has(t.session_id)) groups.set(t.session_id, { last: t, first: t, n: 0 });
+    const g = groups.get(t.session_id); g.first = t; g.n++;
+  });
+  const rows = [...groups.entries()].map(([sid, g]) => row(
+    (g.last.status === "running" ? "● " : "") + g.first.prompt.slice(0, 80),
+    `${g.n} message${g.n > 1 ? "s" : ""} · ${shortPath(g.last.cwd)} · ${timeAgo(g.last.started)}`,
+    () => { state.session = sid; store.set("bridge.session", sid); closeSheet(); loadThread(); }));
+  if (!rows.length) rows.push(el("div", "row sub", "No sessions yet."));
+  const nb = el("button", "btn", "New"); nb.onclick = () => { closeSheet(); newSession(); };
+  openSheet("Sessions", rows, nb);
+}
+
+async function showFolders(path) {
+  let d;
+  try { d = await api("GET", "/dirs?path=" + encodeURIComponent(path || state.cwd || "")); }
+  catch (e) { return openSheet("Folders", [el("div", "row sub", e.message)]); }
+  const rows = [];
+  if (d.parent) rows.push(row("⬆︎  ..", null, () => showFolders(d.parent)));
+  d.dirs.forEach((name) => rows.push(row("📁  " + name, null, () => showFolders(d.path + "/" + name))));
+  if (!d.dirs.length) rows.push(el("div", "row sub", "No subfolders."));
+  const use = el("button", "btn", "Use");
+  use.onclick = () => { state.cwd = d.path; store.set("bridge.cwd", d.path); showCwd(); closeSheet(); if (state.session) newSession(); };
+  openSheet(shortPath(d.path), rows, use);
+}
+
+function newSession() { stopPolling(); state.session = null; store.set("bridge.session", null); loadThread(); $("prompt").focus(); }
+function showCwd() { $("cwdText").textContent = shortPath(state.cwd || state.health?.roots?.[0] || "~"); }
+function shortPath(p) {
+  const s = (p || "").replace(/^\/Users\/[^/]+/, "~");
+  return s.length <= 28 ? s : "…/" + s.split("/").slice(-2).join("/");
+}
+function timeAgo(ts) { const s = Date.now() / 1000 - ts; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; }
+
+// ---------- auth + boot ----------
+function logout(msg) {
+  state.token = ""; store.set("bridge.token", null); stopPolling();
+  ["bar", "composer"].forEach((id) => $(id).classList.add("hidden"));
+  $("thread").replaceChildren(); $("login").classList.remove("hidden");
+  $("loginErr").textContent = msg || ""; $("dot").className = "dot";
+}
+
+async function connect() {
+  try {
+    state.health = await api("GET", "/health");
+  } catch (e) {
+    if (e.message !== "unauthorized") { $("dot").className = "dot err"; logout("Can't reach the bridge: " + e.message); }
+    return;
+  }
+  $("login").classList.add("hidden");
+  ["bar", "composer"].forEach((id) => $(id).classList.remove("hidden"));
+  $("dot").className = "dot ok"; $("title").textContent = state.health.host;
+  showCwd(); await loadThread();
+}
+
+function autosize() { const t = $("prompt"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, innerHeight * 0.4) + "px"; }
+
+$("loginBtn").onclick = () => { state.token = $("tokenInput").value.trim(); store.set("bridge.token", state.token); connect(); };
+$("tokenInput").onkeydown = (e) => { if (e.key === "Enter") $("loginBtn").click(); };
+$("sendBtn").onclick = send;
+$("prompt").oninput = autosize;
+$("prompt").onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); };
+$("newBtn").onclick = newSession;
+$("sessionsBtn").onclick = () => state.token && showSessions().catch((e) => alertInline(e.message));
+$("cwdChip").onclick = () => showFolders();
+$("sheetBg").onclick = $("sheetClose").onclick = closeSheet;
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token && state.health) loadThread().catch(() => {}); });
+
+if (state.token) connect(); else logout();
+</script>
+</body>
+</html>

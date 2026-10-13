@@ -17,10 +17,17 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_FILES = {  # public static files for the browser UI; every API route still needs the token
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+}
 STATE_DIR = Path.home() / ".claude-bridge"
 TOKEN_FILE = STATE_DIR / "token"
 LOG_DIR = STATE_DIR / "tasks"
@@ -131,8 +138,8 @@ class Task:
     def view(self, since=0):
         return {
             "task_id": self.id, "status": self.status, "session_id": self.session_id,
-            "cwd": str(self.cwd), "permission_mode": self.mode,
-            "prompt": self.prompt[:200], "result": self.result, "cost_usd": self.cost_usd,
+            "cwd": str(self.cwd), "permission_mode": self.mode, "started": self.started,
+            "prompt": self.prompt, "result": self.result, "cost_usd": self.cost_usd,
             "elapsed_s": round((self.finished or time.time()) - self.started, 1),
             "events": self.events[since:], "next_since": len(self.events),
         }
@@ -169,11 +176,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, {"error": f"no task {task_id}"})
         return task
 
+    def send_static(self, name, content_type):
+        try:
+            body = (WEB_DIR / name).read_bytes()
+        except OSError:
+            return self.send(404, {"error": f"missing web file {name}"})
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        path = self.path.partition("?")[0]
+        if path in WEB_FILES:
+            return self.send_static(*WEB_FILES[path])
         if not self.authorized():
             return
         parts, params = self.parts()
-        if parts == ["health"]:
+        if parts == ["dirs"]:
+            try:
+                base = resolve_cwd(urllib.parse.unquote(params.get("path", "")))
+                dirs = sorted(p.name for p in base.iterdir() if p.is_dir() and not p.name.startswith("."))
+            except (ValueError, OSError) as exc:
+                return self.send(400, {"error": str(exc)})
+            parent = base.parent if any(base.parent == r or r in base.parent.parents for r in config.roots) else None
+            self.send(200, {"path": str(base), "parent": str(parent) if parent else None, "dirs": dirs})
+        elif parts == ["health"]:
             self.send(200, {"ok": True, "host": os.uname().nodename,
                             "roots": [str(r) for r in config.roots],
                             "permission_mode": config.permission_mode})

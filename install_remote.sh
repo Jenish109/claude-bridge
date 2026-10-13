@@ -51,6 +51,8 @@ echo "    -- uv run -q --script ~/claude-bridge/bridge_mcp.py"
 echo
 echo "(Change the last path if bridge_mcp.py is somewhere else on the controller.)"
 echo
+echo "Phone / tablet / any browser on your Tailscale network: open http://$TS_IP:$PORT"
+echo
 echo "Next on THIS Mac: give Full Disk Access (System Settings > Privacy & Security) to:"
 echo "  $PY"
 echo "  $("$PY" -c 'import sys; print(sys.executable)')"

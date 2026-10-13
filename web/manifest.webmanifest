@@ -1,0 +1,13 @@
+{
+  "name": "Claude Bridge",
+  "short_name": "Bridge",
+  "description": "Run Claude Code tasks on your Mac from any device",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#16161a",
+  "theme_color": "#16161a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
