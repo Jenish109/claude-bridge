@@ -6,6 +6,8 @@ Control **Claude Code on another Mac** from the Claude Code session on your own 
 - Doesn't use a public URL: the two Macs talk directly and encrypted over [Tailscale](https://tailscale.com) (free).
 - Remote work runs in real, resumable Claude Code sessions on the other Mac, so you can continue a task across several requests.
 
+**How it works and why I built it:** [Control Claude Code on another Mac, without the cloud](https://www.jenishvaghasiya.me/blog/control-claude-code-on-another-mac)
+
 ```
  YOUR MAC (controller)                              OTHER MAC (worker)
  ┌───────────────────────────┐   HTTP + token    ┌───────────────────────────────┐
@@ -174,3 +176,11 @@ The task list is kept in memory and resets when the daemon restarts. Sessions ca
 | `bridge_daemon.py` | Worker | HTTP server (standard library only) that runs `claude -p` tasks and records their progress |
 | `install_remote.sh` | Worker | Installs the daemon as a launchd agent and prints the controller command |
 | `bridge_mcp.py` | Controller | MCP server providing the `remote_*` tools (dependencies installed automatically by `uv`) |
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+Built by [Jenish Vaghasiya](https://www.jenishvaghasiya.me). Need a custom MCP server or Claude Code workflow for your own team's tools? [I build those](https://www.jenishvaghasiya.me/services/mcp).
